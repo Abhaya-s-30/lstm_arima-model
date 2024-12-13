@@ -1,0 +1,257 @@
+from google.colab import drive
+drive.mount('/content/drive')
+
+import seaborn as sns
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from keras.models import Sequential
+from keras.layers import LSTM, Dense, RepeatVector, TimeDistributed
+from statsmodels.tsa.arima.model import ARIMA
+
+# Load and preprocess data
+dataframe = pd.read_csv('/content/drive/MyDrive/GE.csv')
+dataframe['Date'] = pd.to_datetime(dataframe['Date'])
+dataframe.set_index('Date', inplace=True)
+
+
+scaler = StandardScaler()
+scaled_data = scaler.fit_transform(dataframe[['Close']])
+
+sns.lineplot(x=dataframe.index, y=dataframe['Close'])
+
+# Prepare data for LSTM
+def prepare_data(data, seq_size):
+    X, y = [], []
+    for i in range(len(data) - seq_size):
+        X.append(data[i:i+seq_size])
+        y.append(data[i+seq_size])
+    return np.array(X), np.array(y)
+
+seq_size = 30  # Number of time steps to look back
+X, y = prepare_data(scaled_data, seq_size)
+
+# Split data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+from keras.optimizers import Adam
+
+
+# Define LSTM autoencoder model
+model = Sequential([
+    LSTM(128, activation='relu', input_shape=(X_train.shape[1], X_train.shape[2]), return_sequences=True),
+    LSTM(64, activation='relu', return_sequences=False),
+    RepeatVector(X_train.shape[1]),
+    LSTM(64, activation='relu', return_sequences=True),
+    LSTM(128, activation='relu', return_sequences=True),
+    TimeDistributed(Dense(X_train.shape[2]))
+])
+
+# Change the optimizer and learning rate
+optimizer = Adam(lr=0.0001)
+model.compile(optimizer=optimizer, loss='mse')
+
+# Train the model with more epochs
+history = model.fit(X_train, y_train, epochs=20, batch_size=32, validation_split=0.1, verbose=1)
+
+
+
+
+
+
+# Evaluate the model
+loss = model.evaluate(X_test, y_test)
+print("Test Loss:", loss)
+
+plt.plot(history.history['loss'], label='Training loss')
+plt.plot(history.history['val_loss'], label='Validation loss')
+plt.legend()
+
+# Make predictions
+train_predict = model.predict(X_train)
+test_predict = model.predict(X_test)
+
+# Calculate Mean Absolute Error
+train_mae = np.mean(np.abs(train_predict - X_train), axis=1)
+test_mae = np.mean(np.abs(test_predict - X_test), axis=1)
+
+plt.figure(figsize=(10, 5))
+
+# Plot train MAE and test MAE in one histogram
+plt.hist(train_mae, bins=30, color='blue', alpha=0.5, label='Train MAE')
+plt.hist(test_mae, bins=30, color='green', alpha=0.5, label='Test MAE')
+plt.title('Train and Test MAE Histogram')
+plt.xlabel('MAE')
+plt.ylabel('Frequency')
+plt.legend()
+
+plt.show()
+
+
+
+# Train ARIMA model
+arima_model = ARIMA(dataframe['Close'], order=(5,1,0))  # Example order, adjust as needed
+arima_result = arima_model.fit()
+
+# Make ARIMA predictions
+arima_predictions = arima_result.predict(start=len(dataframe)-len(test_predict), end=len(dataframe)-1, typ='levels')
+
+# Calculate residuals
+arima_residuals = np.abs(dataframe['Close'].values[-len(test_predict):] - arima_predictions)
+
+# Define threshold for anomaly detection
+threshold_arima = np.mean(arima_residuals) + 2 * np.std(arima_residuals)  # Example threshold, adjust as needed
+
+# Identify anomalies
+anomalies_arima = arima_residuals > threshold_arima
+
+# Create a DataFrame to store the results
+results_df = pd.DataFrame(index=dataframe.index[-len(test_predict):])
+results_df['Actual_Close'] = dataframe['Close'].values[-len(test_predict):]
+results_df['ARIMA_Predictions'] = arima_predictions.values
+results_df['ARIMA_Residuals'] = arima_residuals
+results_df['Anomaly_ARIMA'] = False
+results_df.loc[results_df['ARIMA_Residuals'] > threshold_arima, 'Anomaly_ARIMA'] = True
+results_df['LSTM_Test_MAE'] = test_mae
+
+# Save the results to a CSV file
+results_df.to_csv('/content/drive/MyDrive/anomaly_detection_results.csv')
+
+# Display the first few rows of the results DataFrame
+print(results_df.head())
+
+
+plt.figure(figsize=(10, 6))
+
+# Plot actual close prices
+plt.plot(dataframe.index[-len(test_predict):], dataframe['Close'].values[-len(test_predict):], color='blue', label='Actual Close')
+
+# Highlight anomalies detected by ARIMA
+anomaly_dates = dataframe.index[-len(test_predict):][anomalies_arima]
+anomaly_values = dataframe['Close'].values[-len(test_predict):][anomalies_arima]
+plt.scatter(anomaly_dates, anomaly_values, color='red', label='ARIMA Anomalies')
+
+plt.title('Actual Close Prices and ARIMA Anomalies')
+plt.xlabel('Date')
+plt.ylabel('Close Price')
+plt.legend()
+
+plt.show()
+
+
+anomaly_df = pd.DataFrame(index=dataframe.index[-len(test_predict):])
+anomaly_df['Actual_Close'] = dataframe['Close'].values[-len(test_predict):]
+anomaly_df['LSTM_Test_MAE'] = test_mae
+anomaly_df['Anomaly_ARIMA'] = False
+anomaly_df.loc[anomaly_df.index[-len(test_predict):], 'Anomaly LSTM'] = anomalies_arima
+
+# Save the results to a CSV file
+anomaly_df.to_csv('/content/drive/MyDrive/anomaly_detection_output.csv')
+
+# Display the first few rows of the results DataFrame
+print(anomaly_df.head())
+
+
+
+plt.figure(figsize=(10, 6))
+
+# Plot actual close prices
+plt.plot(dataframe.index[-len(test_predict):], dataframe['Close'].values[-len(test_predict):], color='blue', label='Actual Close')
+
+
+
+# Highlight LSTM Test MAE anomalies
+anomaly_dates_lstm = dataframe.index[-len(test_predict):][anomalies_arima]
+anomaly_values_lstm = dataframe['Close'].values[-len(test_predict):][anomalies_arima]
+plt.scatter(anomaly_dates_lstm, anomaly_values_lstm, color='Purple', label='LSTM Anomalies')
+
+plt.title('Actual Close Prices and LSTM Anomalies')
+plt.xlabel('Date')
+plt.ylabel('Close Price')
+plt.legend()
+
+plt.show()
+
+
+
+
+
+
+
+
+
+from sklearn.metrics import classification_report
+from sklearn.metrics import f1_score
+
+# Convert test data to binary labels
+def to_binary(y_true, y_pred, threshold):
+    return (np.mean(np.abs(y_pred - y_true), axis=2) > threshold).astype(int)
+
+# Convert true labels to binary format
+y_test_binary = (np.mean(np.abs(X_test - test_predict), axis=2) > threshold_arima).astype(int)
+
+# Find the best threshold
+best_f1 = 0
+best_threshold = 0
+for threshold in np.arange(0.1, 1, 0.1):
+    y_pred_binary = to_binary(X_test, test_predict, threshold)
+    f1 = f1_score(y_test_binary.flatten(), y_pred_binary.flatten(), average='micro')
+    if f1 > best_f1:
+        best_f1 = f1
+        best_threshold = threshold
+
+print("Best F1 Score:", best_f1)
+print("Best Threshold:", best_threshold)
+
+# Generate classification report for LSTM model
+print("LSTM Model Classification Report:")
+print(classification_report(y_test_binary.flatten(), y_pred_binary.flatten()))
+
+
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+
+# ARIMA model evaluation
+arima_predictions_binary = arima_residuals.copy()
+arima_predictions_binary[arima_residuals <= threshold_arima] = 0
+arima_predictions_binary[arima_residuals > threshold_arima] = 1
+
+arima_accuracy = accuracy_score(anomalies_arima, arima_predictions_binary)
+arima_precision = precision_score(anomalies_arima, arima_predictions_binary)
+arima_recall = recall_score(anomalies_arima, arima_predictions_binary)
+arima_f1 = f1_score(anomalies_arima, arima_predictions_binary)
+
+print("ARIMA Model Evaluation:")
+print("Accuracy:", arima_accuracy)
+print("Precision:", arima_precision)
+print("Recall:", arima_recall)
+print("F1 Score:", arima_f1)
+
+# LSTM model evaluation
+lstm_predictions_binary = test_mae.copy()
+lstm_predictions_binary[test_mae <= threshold_arima] = 0
+lstm_predictions_binary[test_mae > threshold_arima] = 1
+
+lstm_accuracy = accuracy_score(anomalies_arima, lstm_predictions_binary)
+lstm_precision = precision_score(anomalies_arima, lstm_predictions_binary)
+lstm_recall = recall_score(anomalies_arima, lstm_predictions_binary)
+lstm_f1 = f1_score(anomalies_arima, lstm_predictions_binary)
+
+print("\nLSTM Model Evaluation:")
+print("Accuracy:", lstm_accuracy)
+
+
+import matplotlib.pyplot as plt
+
+# Plotting accuracy comparison
+labels = ['ARIMA', 'LSTM']
+accuracy_scores = [arima_accuracy, lstm_accuracy]
+
+plt.figure(figsize=(8, 5))
+plt.bar(labels, accuracy_scores, color=['blue', 'green'], width=0.1)
+plt.title('Accuracy Comparison: ARIMA vs LSTM')
+plt.ylabel('Accuracy')
+plt.ylim(0, 1)
+plt.xticks([0, 1], labels)
+plt.show()
